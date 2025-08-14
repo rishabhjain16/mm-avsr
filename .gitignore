@@ -34,6 +34,9 @@ logs/
 # data/
 # /data/
 
+.kiro/
+.vscode/
+
 # Temporary files
 *.tmp
 *.temp
