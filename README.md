@@ -1,4 +1,8 @@
-# Auto-AVSR: Lip-reading Sentences Project
+# MM-AVSR: Multimodal AUDIO_VIDEO Speech Recognition for LipReading
+
+## Project
+
+Cloned from Auto-AVSR repo
 
 ## Update
 
@@ -10,7 +14,7 @@
 
 This repository is an open-sourced framework for speech recognition, with a primary focus on visual speech (lip-reading). It is designed for end-to-end training, aiming to deliver state-of-the-art models and enable reproducibility on audio-visual speech benchmarks.
 
-<div align="center"><img src="doc/pipeline.png" width="640"/></div>
+
 
 By using this repository, you can achieve a word error rate (WER) of 20.3% for visual speech recognition (VSR) and 1.0% for audio speech recognition (ASR) on LRS3. This repository also provides API and pipeline tutorials.
 

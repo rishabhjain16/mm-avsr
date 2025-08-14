@@ -36,7 +36,7 @@ def test_vit_encoder():
     )
     
     # Get a sample
-    sample = dataset[0]
+    sample = dataset[1]
     video_data = sample["input"]
     print(f"Video data shape: {video_data.shape}")
     
