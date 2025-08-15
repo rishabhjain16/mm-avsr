@@ -49,13 +49,18 @@ class CLIPEncoder(nn.Module):
         
         # Load CLIP vision model
         try:
-            self.clip_vision = CLIPVisionModel.from_pretrained(model_name)
+            from espnet.nets.pytorch_backend.model_cache_utils import (
+                load_model_from_path_or_download, get_model_path, log_model_info
+            )
+            
+            self.clip_vision = load_model_from_path_or_download(CLIPVisionModel, model_name)
+            log_model_info(model_name, "CLIP")
         except Exception as e:
+            model_path = get_model_path(model_name)
             raise RuntimeError(
                 f"Failed to load CLIP model '{model_name}'. "
-                f"Please ensure the model is available or check your internet connection. "
-                f"You can download models manually using: "
-                f"python -c \"from transformers import CLIPVisionModel; CLIPVisionModel.from_pretrained('{model_name}')\". "
+                f"You can manually download it using: "
+                f"huggingface-cli download {model_name} --local-dir {model_path}. "
                 f"Original error: {e}"
             )
         
@@ -159,6 +164,11 @@ def clip_encoder(
     Returns:
         CLIPEncoder instance
     """
+    # Handle None model_name by using default
+    if model_name is None:
+        model_name = "openai/clip-vit-base-patch32"
+        print(f"[INFO] No CLIP model specified, using default: {model_name}")
+    
     return CLIPEncoder(
         model_name=model_name,
         frozen=frozen,
@@ -184,6 +194,11 @@ def clip_vit_encoder(
     Returns:
         CLIPViTEncoder instance
     """
+    # Handle None model_name by using default
+    if model_name is None:
+        model_name = "openai/clip-vit-base-patch32"
+        print(f"[INFO] No CLIP ViT model specified, using default: {model_name}")
+    
     return CLIPViTEncoder(
         model_name=model_name,
         frozen=frozen,

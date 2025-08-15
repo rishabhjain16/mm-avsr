@@ -46,20 +46,36 @@ class WhisperEncoder(nn.Module):
         self.a_upsample_ratio = a_upsample_ratio
         
         # Load Whisper model
-        self.whisper = WhisperModel.from_pretrained(model_name)
+        from espnet.nets.pytorch_backend.model_cache_utils import (
+            load_model_from_path_or_download, log_model_info
+        )
+        
+        self.whisper = load_model_from_path_or_download(WhisperModel, model_name)
         self.encoder = self.whisper.encoder
+        log_model_info(model_name, "Whisper encoder")
         
         # Get model dimensions
         self.config = self.whisper.config
         self.hidden_size = self.config.d_model
         
-        # Freeze encoder if specified
-        if freeze_encoder:
+        # Freeze the entire model first (including decoder), then unfreeze encoder if needed
+        # This prevents the decoder from consuming memory and gradients
+        for param in self.whisper.parameters():
+            param.requires_grad = False
+        
+        # Then handle encoder freezing
+        if not freeze_encoder:
+            # Only unfreeze encoder if explicitly requested
             for param in self.encoder.parameters():
-                param.requires_grad = False
-            logging.info(f"Frozen Whisper encoder: {model_name}")
-        else:
+                param.requires_grad = True
             logging.info(f"Trainable Whisper encoder: {model_name}")
+        else:
+            logging.info(f"Frozen Whisper encoder: {model_name}")
+        
+        # Log parameter counts for verification
+        encoder_params = sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.whisper.parameters() if p.requires_grad)
+        logging.info(f"Whisper encoder trainable parameters: {encoder_params:,} / {total_params:,}")
     
     def forward(self, xs_pad):
         """Forward pass.
@@ -88,7 +104,14 @@ class WhisperEncoder(nn.Module):
             # Use Whisper's feature extractor to convert raw audio to mel-spectrogram
             try:
                 from transformers import WhisperFeatureExtractor
-                feature_extractor = WhisperFeatureExtractor.from_pretrained(self.model_name)
+                # Load feature extractor from the same location as the model
+                from espnet.nets.pytorch_backend.model_cache_utils import get_model_path, check_model_exists_locally
+                model_path = get_model_path(self.model_name)
+                
+                if check_model_exists_locally(self.model_name):
+                    feature_extractor = WhisperFeatureExtractor.from_pretrained(model_path, local_files_only=True)
+                else:
+                    feature_extractor = WhisperFeatureExtractor.from_pretrained(self.model_name)
                 
                 # Convert raw audio to mel-spectrogram
                 # audio_input shape: (B, T) - raw audio
@@ -196,6 +219,11 @@ def audio_whisper_encoder(
     Returns:
         Conv1dWhisperEncoder: Whisper encoder instance
     """
+    # Handle None model_name by using default
+    if model_name is None:
+        model_name = "openai/whisper-base"
+        print(f"[INFO] No Whisper model specified, using default: {model_name}")
+    
     return Conv1dWhisperEncoder(
         model_name=model_name,
         freeze_encoder=freeze_encoder,

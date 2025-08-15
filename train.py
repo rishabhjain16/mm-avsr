@@ -1,5 +1,6 @@
 import logging
 import os
+import warnings
 from argparse import ArgumentParser
 
 from average_checkpoints import ensemble
@@ -8,6 +9,12 @@ from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.loggers import WandbLogger
+
+# Suppress torchvision video deprecation warnings
+warnings.filterwarnings("ignore", message=".*video decoding and encoding capabilities.*")
+warnings.filterwarnings("ignore", message=".*TorchCodec.*")
+# Suppress DDP unused parameters warning (we handle this correctly)
+warnings.filterwarnings("ignore", message=".*find_unused_parameters=True.*")
 
 
 # Set environment variables and logger level
@@ -34,7 +41,7 @@ def get_trainer(args):
         num_nodes=args.num_nodes,
         devices=args.gpus,
         accelerator="gpu",
-        strategy=DDPStrategy(find_unused_parameters=False),
+        strategy=DDPStrategy(find_unused_parameters=True),
         callbacks=callbacks,
         reload_dataloaders_every_n_epochs=1,
         logger=WandbLogger(name=args.exp_name, project="auto_avsr_lipreader", group=args.group_name),
@@ -126,6 +133,16 @@ def parse_args():
         "--decoder-model-name",
         type=str,
         help="Specific model name for decoder (e.g., meta-llama/Llama-2-7b-hf)",
+    )
+    parser.add_argument(
+        "--unfreeze-vision",
+        action="store_true",
+        help="Unfreeze vision encoder for full training (increases memory usage)",
+    )
+    parser.add_argument(
+        "--unfreeze-audio", 
+        action="store_true",
+        help="Unfreeze audio encoder for full training (increases memory usage)",
     )
     parser.add_argument(
         "--root-dir",

@@ -52,16 +52,24 @@ class ViViTEncoder(nn.Module):
         
         # Load ViViT model
         try:
-            self.vivit = VivitModel.from_pretrained(
+            from espnet.nets.pytorch_backend.model_cache_utils import (
+                load_model_from_path_or_download, get_model_path, log_model_info
+            )
+            
+            self.vivit = load_model_from_path_or_download(
+                VivitModel, 
                 model_name,
                 torch_dtype=torch.float32,  # Use float32 for compatibility
                 attn_implementation="eager"  # Use eager attention for compatibility
             )
             self.config = self.vivit.config
+            log_model_info(model_name, "ViViT")
         except Exception as e:
+            model_path = get_model_path(model_name)
             raise RuntimeError(
                 f"Failed to load ViViT model '{model_name}'. "
-                f"Please ensure the model is available or check your internet connection. "
+                f"You can manually download it using: "
+                f"huggingface-cli download {model_name} --local-dir {model_path}. "
                 f"Original error: {e}"
             )
         

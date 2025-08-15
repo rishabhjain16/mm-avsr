@@ -39,8 +39,12 @@ class ModelModule(LightningModule):
             vision_model_name=getattr(args, "vision_model_name", None),
             audio_model_name=getattr(args, "audio_model_name", None),
             decoder_model_name=getattr(args, "decoder_model_name", None),
+            unfreeze_vision=getattr(args, "unfreeze_vision", False),
+            unfreeze_audio=getattr(args, "unfreeze_audio", False),
         )
 
+
+        
         # -- initialise
         if getattr(args, "pretrained_model_path", None):
             ckpt = torch.load(args.pretrained_model_path, map_location=lambda storage, loc: storage)
@@ -118,6 +122,19 @@ class ModelModule(LightningModule):
         self.total_edit_distance += compute_word_level_distance(actual, predicted)
         self.total_length += len(actual.split())
         return
+
+    def on_train_epoch_end(self):
+        """Log memory usage at the end of each epoch."""
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            peak = torch.cuda.max_memory_allocated() / 1024**3
+            
+            # Log to wandb
+            self.log("memory_gb", allocated, on_epoch=True, sync_dist=False)
+            self.log("peak_memory_gb", peak, on_epoch=True, sync_dist=False)
+            
+            # Simple console output
+            print(f"💾 Epoch {self.current_epoch}: {allocated:.1f}GB memory, {peak:.1f}GB peak")
 
     def training_step(self, batch, batch_idx):
         loss = self._step(batch, batch_idx, "train")

@@ -4,8 +4,8 @@
 # Copyright 2023 Imperial College London (Pingchuan Ma)
 # Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
+import os
 import torch
-
 import torch.nn.functional as F
 import logging
 
@@ -131,6 +131,9 @@ def create_decoder(decoder_type="transformer", odim=None, model_name=None, **kwa
                 from espnet.nets.pytorch_backend.decoder.llama_decoder import LLaMADecoder
                 if odim is None:
                     raise ValueError("odim (output dimension) is required for LLaMA decoder")
+                # Use default model if none specified
+                if model_name is None:
+                    model_name = "meta-llama/Llama-2-7b-hf"
                 return LLaMADecoder(odim=odim, model_name=model_name, **kwargs)
             except ImportError as e:
                 raise ImportError(f"LLaMA decoder dependencies not available. "
@@ -406,7 +409,17 @@ class E2E(torch.nn.Module):
         try:
             if self.modality == "audio":
                 encoder_type = audio_encoder if audio_encoder else "resnet1d"
-                self.frontend = create_audio_encoder(encoder_type, model_name=audio_model_name, **kwargs)
+                # Handle unfreezing for single modality
+                audio_kwargs = kwargs.copy()
+                if 'unfreeze_audio' in kwargs:
+                    if encoder_type == "whisper":
+                        audio_kwargs['freeze_encoder'] = not kwargs['unfreeze_audio']
+                    else:
+                        audio_kwargs['frozen'] = not kwargs['unfreeze_audio']
+                    audio_kwargs.pop('unfreeze_audio', None)
+                    audio_kwargs.pop('unfreeze_vision', None)
+                
+                self.frontend = create_audio_encoder(encoder_type, model_name=audio_model_name, **audio_kwargs)
                 # Get output dimension and create projection
                 frontend_dim = get_encoder_output_dim(self.frontend, encoder_type, audio_model_name)
                 if frontend_dim <= 0:
@@ -416,7 +429,14 @@ class E2E(torch.nn.Module):
                 
             elif self.modality == "video":
                 encoder_type = vision_encoder if vision_encoder else "resnet"
-                self.frontend = create_vision_encoder(encoder_type, model_name=vision_model_name, **kwargs)
+                # Handle unfreezing for single modality
+                vision_kwargs = kwargs.copy()
+                if 'unfreeze_vision' in kwargs:
+                    vision_kwargs['frozen'] = not kwargs['unfreeze_vision']
+                    vision_kwargs.pop('unfreeze_vision', None)
+                    vision_kwargs.pop('unfreeze_audio', None)
+                
+                self.frontend = create_vision_encoder(encoder_type, model_name=vision_model_name, **vision_kwargs)
                 # Get output dimension and create projection
                 frontend_dim = get_encoder_output_dim(self.frontend, encoder_type, vision_model_name)
                 if frontend_dim <= 0:
@@ -430,7 +450,15 @@ class E2E(torch.nn.Module):
                 audio_type = audio_encoder if audio_encoder else "resnet1d"
                 
                 try:
-                    self.vision_frontend = create_vision_encoder(vision_type, model_name=vision_model_name, **kwargs)
+                    # Pass unfreezing parameter to vision encoder
+                    vision_kwargs = kwargs.copy()
+                    if 'unfreeze_vision' in kwargs:
+                        vision_kwargs['frozen'] = not kwargs['unfreeze_vision']
+                        # Remove the unfreeze_vision parameter as encoders don't expect it
+                        vision_kwargs.pop('unfreeze_vision', None)
+                        vision_kwargs.pop('unfreeze_audio', None)  # Also remove audio param
+                    
+                    self.vision_frontend = create_vision_encoder(vision_type, model_name=vision_model_name, **vision_kwargs)
                     vision_dim = get_encoder_output_dim(self.vision_frontend, vision_type, vision_model_name)
                     if vision_dim <= 0:
                         raise ValueError(f"Invalid vision frontend output dimension: {vision_dim}")
@@ -439,7 +467,18 @@ class E2E(torch.nn.Module):
                     raise
                 
                 try:
-                    self.audio_frontend = create_audio_encoder(audio_type, model_name=audio_model_name, **kwargs)
+                    # Pass unfreezing parameter to audio encoder
+                    audio_kwargs = kwargs.copy()
+                    if 'unfreeze_audio' in kwargs:
+                        if audio_type == "whisper":
+                            audio_kwargs['freeze_encoder'] = not kwargs['unfreeze_audio']
+                        else:
+                            audio_kwargs['frozen'] = not kwargs['unfreeze_audio']
+                        # Remove the unfreeze parameters as encoders don't expect them
+                        audio_kwargs.pop('unfreeze_vision', None)
+                        audio_kwargs.pop('unfreeze_audio', None)
+                    
+                    self.audio_frontend = create_audio_encoder(audio_type, model_name=audio_model_name, **audio_kwargs)
                     audio_dim = get_encoder_output_dim(self.audio_frontend, audio_type, audio_model_name)
                     if audio_dim <= 0:
                         raise ValueError(f"Invalid audio frontend output dimension: {audio_dim}")
@@ -491,14 +530,18 @@ class E2E(torch.nn.Module):
 
         # Create decoder using factory function
         try:
+            # Filter out encoder-specific parameters that shouldn't be passed to decoder
+            decoder_kwargs = kwargs.copy()
+            encoder_specific_params = ['unfreeze_vision', 'unfreeze_audio', 'frozen']
+            for param in encoder_specific_params:
+                decoder_kwargs.pop(param, None)
+            
             # For multimodal, pass the fusion output dimension as encoder_dim
             if self.modality == "multimodal":
-                decoder_kwargs = kwargs.copy()
                 decoder_kwargs['encoder_dim'] = 768  # Multimodal fusion output dimension
                 self.decoder = create_decoder(decoder, odim=odim, model_name=decoder_model_name, **decoder_kwargs)
             else:
                 # For single modality, pass the frontend output dimension
-                decoder_kwargs = kwargs.copy()
                 decoder_kwargs['encoder_dim'] = 768  # Standard conformer dimension
                 self.decoder = create_decoder(decoder, odim=odim, model_name=decoder_model_name, **decoder_kwargs)
         except Exception as e:
@@ -545,6 +588,14 @@ class E2E(torch.nn.Module):
         except Exception as e:
             logging.warning(f"Failed to log architecture configuration: {e}")
             # Continue execution as this is not critical
+        
+        # Profile model parameters and memory usage (can be disabled with env var)
+        if not os.environ.get('DISABLE_MODEL_PROFILING', False):
+            try:
+                self._profile_model_resources()
+            except Exception:
+                # Continue execution as this is not critical
+                pass
         
         # Validate the final model state
         try:
@@ -795,6 +846,73 @@ class E2E(torch.nn.Module):
         else:
             print(f"  QLoRA: Disabled")
 
+    def _profile_model_resources(self):
+        """Profile model parameters and memory usage."""
+        try:
+            # Try to use external profiler first
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+            from model_profiler import print_model_profile
+            
+            # Determine device
+            device = "cuda" if torch.cuda.is_available() and next(self.parameters()).is_cuda else "cpu"
+            
+            # Print comprehensive profiling information
+            print_model_profile(self, device=device, logger=logging.getLogger(__name__))
+            
+        except ImportError:
+            # Fallback to simple profiling
+            self._simple_profile_model()
+        except Exception:
+            # Fallback to simple profiling without logging the error
+            self._simple_profile_model()
+    
+    def _simple_profile_model(self):
+        """Simple, clean model profiling."""
+        print("\n" + "=" * 60)
+        print("MODEL SUMMARY")
+        print("=" * 60)
+        
+        # Overall model stats
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        frozen_params = total_params - trainable_params
+        
+        print(f"Total Parameters:     {total_params:>12,}")
+        print(f"Trainable Parameters: {trainable_params:>12,} ({trainable_params/total_params:.1%})")
+        print(f"Frozen Parameters:    {frozen_params:>12,} ({frozen_params/total_params:.1%})")
+        
+        # Component breakdown
+        print(f"\nComponent Breakdown:")
+        print("-" * 45)
+        
+        components = {}
+        if hasattr(self, 'vision_frontend') and self.vision_frontend is not None:
+            components['Vision Frontend'] = self.vision_frontend
+        if hasattr(self, 'audio_frontend') and self.audio_frontend is not None:
+            components['Audio Frontend'] = self.audio_frontend
+        if hasattr(self, 'frontend') and self.frontend is not None:
+            components['Frontend'] = self.frontend
+        if hasattr(self, 'encoder') and self.encoder is not None:
+            components['Conformer'] = self.encoder
+        if hasattr(self, 'decoder') and self.decoder is not None:
+            components['Decoder'] = self.decoder
+        
+        for name, component in components.items():
+            if component is not None:
+                comp_total = sum(p.numel() for p in component.parameters())
+                comp_trainable = sum(p.numel() for p in component.parameters() if p.requires_grad)
+                if comp_trainable == 0:
+                    status = "Frozen"
+                elif comp_trainable == comp_total:
+                    status = "Trainable"
+                else:
+                    status = f"Mixed ({comp_trainable/1e6:.1f}M trainable)"
+                print(f"{name:<18} {comp_total/1e6:>6.1f}M  {status}")
+        
+        print("=" * 60)
+
     def get_trainable_parameters(self):
         """Get trainable parameters for optimizer (important for QLoRA).
         
@@ -843,19 +961,14 @@ class E2E(torch.nn.Module):
                 padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
                 
         else:
-            # Single modality processing
-            original_length = lengths.max()
+            # Single modality processing - simplified approach
             x = self.frontend(x)
             x = self.proj_encoder(x)
             
-            # Update lengths if frontend changed temporal dimension
-            new_length = x.size(1)
-            if new_length != original_length:
-                # Adjust lengths proportionally
-                length_ratio = new_length / original_length.float()
-                lengths = (lengths.float() * length_ratio).long()
-                # Recreate padding mask with new lengths
-                padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
+            # Update lengths and padding mask based on actual output sequence length
+            actual_length = x.size(1)
+            lengths = torch.full_like(lengths, actual_length)
+            padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
 
         x, _ = self.encoder(x, padding_mask)
 

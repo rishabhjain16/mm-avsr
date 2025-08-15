@@ -61,10 +61,23 @@ class WhisperDecoder(BatchScorerInterface, torch.nn.Module):
         
         # Load Whisper configuration and model
         try:
-            config = WhisperConfig.from_pretrained(model_name)
-            self.whisper = WhisperModel.from_pretrained(model_name, config=config)
+            from espnet.nets.pytorch_backend.model_cache_utils import (
+                load_model_from_path_or_download, get_model_path, check_model_exists_locally, log_model_info
+            )
+            
+            # Load model from local path or download
+            self.whisper = load_model_from_path_or_download(WhisperModel, model_name)
+            
+            # Load config from the same location
+            model_path = get_model_path(model_name)
+            if check_model_exists_locally(model_name):
+                config = WhisperConfig.from_pretrained(model_path, local_files_only=True)
+            else:
+                config = WhisperConfig.from_pretrained(model_name)
+            
             self.hidden_size = config.d_model
             self.num_layers = config.decoder_layers
+            log_model_info(model_name, "Whisper decoder")
         except Exception as e:
             logging.error(f"Failed to load Whisper model {model_name}: {e}")
             raise

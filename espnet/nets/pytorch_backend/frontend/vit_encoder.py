@@ -45,11 +45,18 @@ class ViTEncoder(nn.Module):
         
         # Load ViT model
         try:
-            self.vit = ViTModel.from_pretrained(model_name)
+            from espnet.nets.pytorch_backend.model_cache_utils import (
+                load_model_from_path_or_download, get_model_path, log_model_info
+            )
+            
+            self.vit = load_model_from_path_or_download(ViTModel, model_name)
+            log_model_info(model_name, "ViT")
         except Exception as e:
+            model_path = get_model_path(model_name)
             raise RuntimeError(
                 f"Failed to load ViT model '{model_name}'. "
-                f"Please ensure the model is available or check your internet connection. "
+                f"You can manually download it using: "
+                f"huggingface-cli download {model_name} --local-dir {model_path}. "
                 f"Original error: {e}"
             )
         
@@ -148,6 +155,11 @@ def vit_encoder(
     Returns:
         ViTEncoder instance
     """
+    # Handle None model_name by using default
+    if model_name is None:
+        model_name = "google/vit-base-patch16-224"
+        print(f"[INFO] No ViT model specified, using default: {model_name}")
+    
     return ViTEncoder(
         model_name=model_name,
         frozen=frozen,

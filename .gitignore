@@ -36,7 +36,9 @@ logs/
 
 .kiro/
 .vscode/
-
+Llama-2-7b-hf
+downloaded_models
+wandb
 # Temporary files
 *.tmp
 *.temp

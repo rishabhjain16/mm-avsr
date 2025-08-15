@@ -129,7 +129,7 @@ class DataModule(LightningDataModule):
             subset="train",
             modality=self.args.modality,
             audio_transform=AudioTransform("train"),
-            video_transform=VideoTransform("train"),
+            video_transform=VideoTransform("train", vision_encoder=getattr(self.args, 'vision_encoder', None)),
             vision_encoder=getattr(self.args, 'vision_encoder', None),
             audio_encoder=getattr(self.args, 'audio_encoder', None),
         )
@@ -156,7 +156,7 @@ class DataModule(LightningDataModule):
             subset="val",
             modality=self.args.modality,
             audio_transform=AudioTransform("val"),
-            video_transform=VideoTransform("val"),
+            video_transform=VideoTransform("val", vision_encoder=getattr(self.args, 'vision_encoder', None)),
             vision_encoder=getattr(self.args, 'vision_encoder', None),
             audio_encoder=getattr(self.args, 'audio_encoder', None),
         )
@@ -180,7 +180,7 @@ class DataModule(LightningDataModule):
             audio_transform=AudioTransform(
                 "test", snr_target=self.args.decode_snr_target
             ),
-            video_transform=VideoTransform("test"),
+            video_transform=VideoTransform("test", vision_encoder=getattr(self.args, 'vision_encoder', None)),
             vision_encoder=getattr(self.args, 'vision_encoder', None),
             audio_encoder=getattr(self.args, 'audio_encoder', None),
         )

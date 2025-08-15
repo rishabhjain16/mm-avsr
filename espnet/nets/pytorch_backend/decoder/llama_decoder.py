@@ -74,9 +74,22 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
         
         # Load LLaMA configuration and model
         try:
-            config = LlamaConfig.from_pretrained(model_name)
-            self.llama = LlamaModel.from_pretrained(model_name, config=config)
+            from espnet.nets.pytorch_backend.model_cache_utils import (
+                load_model_from_path_or_download, get_model_path, check_model_exists_locally, log_model_info
+            )
+            
+            # Load model from local path or download
+            self.llama = load_model_from_path_or_download(LlamaModel, model_name)
+            
+            # Load config from the same location
+            model_path = get_model_path(model_name)
+            if check_model_exists_locally(model_name):
+                config = LlamaConfig.from_pretrained(model_path, local_files_only=True)
+            else:
+                config = LlamaConfig.from_pretrained(model_name)
+            
             self.hidden_size = config.hidden_size
+            log_model_info(model_name, "LLaMA")
         except Exception as e:
             logging.error(f"Failed to load LLaMA model {model_name}: {e}")
             raise

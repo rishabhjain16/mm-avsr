@@ -105,8 +105,15 @@ class VideoTransform:
         if subset == "train":
             transforms = [
                 FunctionalModule(lambda x: x / 255.0),
-                torchvision.transforms.RandomCrop(self.target_size),
             ]
+            
+            # Choose resize strategy based on encoder
+            if self.vision_encoder in ["vit", "clip-vit", "vivit"]:
+                # For transformer models, resize to exact target size
+                transforms.append(torchvision.transforms.Resize((self.target_size, self.target_size)))
+            else:
+                # For ResNet, use random crop (original behavior)
+                transforms.append(torchvision.transforms.RandomCrop(self.target_size))
             
             # Add channel conversion
             if self.target_channels == 1:
@@ -125,8 +132,15 @@ class VideoTransform:
         elif subset == "val" or subset == "test":
             transforms = [
                 FunctionalModule(lambda x: x / 255.0),
-                torchvision.transforms.CenterCrop(self.target_size),
             ]
+            
+            # Choose resize strategy based on encoder
+            if self.vision_encoder in ["vit", "clip-vit", "vivit"]:
+                # For transformer models, resize to exact target size
+                transforms.append(torchvision.transforms.Resize((self.target_size, self.target_size)))
+            else:
+                # For ResNet, use center crop (original behavior)
+                transforms.append(torchvision.transforms.CenterCrop(self.target_size))
             
             # Add channel conversion
             if self.target_channels == 1:

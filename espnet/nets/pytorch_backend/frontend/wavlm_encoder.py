@@ -46,7 +46,12 @@ class WavLMEncoder(nn.Module):
         self.a_upsample_ratio = a_upsample_ratio
         
         # Load WavLM model
-        self.wavlm = WavLMModel.from_pretrained(model_name)
+        from espnet.nets.pytorch_backend.model_cache_utils import (
+            load_model_from_path_or_download, log_model_info
+        )
+        
+        self.wavlm = load_model_from_path_or_download(WavLMModel, model_name)
+        log_model_info(model_name, "WavLM")
         
         # Get model dimensions
         self.config = self.wavlm.config
@@ -159,6 +164,11 @@ def audio_wavlm_encoder(
     Returns:
         Conv1dWavLMEncoder: WavLM encoder instance
     """
+    # Handle None model_name by using default
+    if model_name is None:
+        model_name = "microsoft/wavlm-base"
+        print(f"[INFO] No WavLM model specified, using default: {model_name}")
+    
     return Conv1dWavLMEncoder(
         model_name=model_name,
         freeze_encoder=freeze_encoder,
