@@ -44,7 +44,7 @@ MODEL_PRESETS = {
     "vit_advanced": {
         "vision_encoder": "vit",
         "audio_encoder": "whisper",
-        "decoder": "llama",
+        "decoder": "llm",
         "use_qlora": True,
         "vision_model_name": "google/vit-base-patch16-224",
         "audio_model_name": "openai/whisper-medium",
@@ -71,7 +71,7 @@ MODEL_PRESETS = {
     "high_performance": {
         "vision_encoder": "vit",
         "audio_encoder": "wavlm",
-        "decoder": "llama", 
+        "decoder": "llm", 
         "use_qlora": True,
         "vision_model_name": "google/vit-base-patch16-224",
         "audio_model_name": "microsoft/wavlm-base",

@@ -19,7 +19,7 @@ from espnet.nets.pytorch_backend.transformer.add_sos_eos import add_sos_eos
 from espnet.nets.pytorch_backend.transformer.label_smoothing_loss import LabelSmoothingLoss
 from espnet.nets.pytorch_backend.transformer.mask import target_mask
 from espnet.nets.scorers.ctc import CTCPrefixScorer
-
+import math
 
 def create_vision_encoder(encoder_type="resnet", model_name=None, **kwargs):
     """Factory function to create vision encoders.
@@ -107,7 +107,7 @@ def create_decoder(decoder_type="transformer", odim=None, model_name=None, **kwa
     """Factory function to create decoders.
     
     Args:
-        decoder_type (str): Type of decoder ('transformer', 'llama', 'whisper-decoder')
+        decoder_type (str): Type of decoder ('transformer', 'llm', 'whisper-decoder')
         odim (int): Output dimension
         model_name (str): Specific model name for the decoder
         **kwargs: Additional arguments for decoder initialization
@@ -126,30 +126,34 @@ def create_decoder(decoder_type="transformer", odim=None, model_name=None, **kwa
                 linear_units=3072,
                 num_blocks=6,
             )
-        elif decoder_type == "llama":
+        elif decoder_type == "llm":
             try:
                 from espnet.nets.pytorch_backend.decoder.llama_decoder import LLaMADecoder
                 if odim is None:
-                    raise ValueError("odim (output dimension) is required for LLaMA decoder")
+                    raise ValueError("odim (output dimension) is required for LLM decoder")
                 # Use default model if none specified
                 if model_name is None:
                     model_name = "meta-llama/Llama-2-7b-hf"
                 return LLaMADecoder(odim=odim, model_name=model_name, **kwargs)
             except ImportError as e:
-                raise ImportError(f"LLaMA decoder dependencies not available. "
+                raise ImportError(f"LLM decoder dependencies not available. "
                                 f"Please install required packages: transformers, peft, bitsandbytes. Error: {e}")
         elif decoder_type == "whisper-decoder":
             try:
                 from espnet.nets.pytorch_backend.decoder.whisper_decoder import WhisperDecoder
                 if odim is None:
                     raise ValueError("odim (output dimension) is required for Whisper decoder")
-                return WhisperDecoder(odim=odim, model_name=model_name, **kwargs)
+                # Only pass model_name if it's not None, allowing default to be used
+                if model_name is not None:
+                    return WhisperDecoder(odim=odim, model_name=model_name, **kwargs)
+                else:
+                    return WhisperDecoder(odim=odim, **kwargs)
             except ImportError as e:
                 raise ImportError(f"Whisper decoder dependencies not available. "
                                 f"Please install required packages: transformers, torch-audio. Error: {e}")
         else:
             raise ValueError(f"Unknown decoder type: {decoder_type}. "
-                           f"Valid options: transformer, llama, whisper-decoder")
+                           f"Valid options: transformer, llm, whisper-decoder")
     except Exception as e:
         logging.error(f"Failed to create decoder '{decoder_type}': {e}")
         raise
@@ -233,68 +237,95 @@ def get_encoder_output_dim(encoder, encoder_type, model_name=None):
             return 512  # Safe fallback
 
 
-def align_temporal_sequences(vision_features, audio_features, method="pad_truncate"):
-    """Align temporal dimensions of vision and audio features.
-    
-    Args:
-        vision_features (torch.Tensor): Vision features (B, T_v, D_v)
-        audio_features (torch.Tensor): Audio features (B, T_a, D_a)
-        method (str): Alignment method ("pad_truncate", "interpolate")
-        
-    Returns:
-        tuple: Aligned (vision_features, audio_features)
+def align_by_stacking(vision_features, audio_features):
+    """
+    Align by stacking audio frames to match video timeline.
+    Example: T_v=25, T_a=100 → stack ratio=4 → (B,25,4*D_a).
     """
     B_v, T_v, D_v = vision_features.shape
     B_a, T_a, D_a = audio_features.shape
-    
     assert B_v == B_a, f"Batch sizes must match: {B_v} vs {B_a}"
     
+    if T_a % T_v != 0:
+        raise ValueError(f"Audio length {T_a} not divisible by video length {T_v} for stacking")
+
+    r = T_a // T_v
+    audio_stacked = audio_features.view(B_a, T_v, r * D_a)  # (B, T_v, r*D_a)
+    
+    logging.info(f"Stacking alignment: video {T_v}, audio {T_a} → (B,{T_v},{r*D_a})")
+    return vision_features, audio_stacked
+
+
+def align_by_interpolation(vision_features, audio_features):
+    """
+    Align by interpolating the shorter sequence to the longer one.
+    Example: T_v=25, T_a=100 → upsample vision to 100.
+    """
+    B_v, T_v, D_v = vision_features.shape
+    B_a, T_a, D_a = audio_features.shape
+    assert B_v == B_a, f"Batch sizes must match: {B_v} vs {B_a}"
+
+    T_target = max(T_v, T_a)
+
+    if T_v != T_target:
+        vision_aligned = F.interpolate(
+            vision_features.transpose(1, 2), size=T_target,
+            mode='linear', align_corners=False
+        ).transpose(1, 2)
+    else:
+        vision_aligned = vision_features
+
+    if T_a != T_target:
+        audio_aligned = F.interpolate(
+            audio_features.transpose(1, 2), size=T_target,
+            mode='linear', align_corners=False
+        ).transpose(1, 2)
+    else:
+        audio_aligned = audio_features
+
+    logging.info(f"Interpolation alignment: vision {T_v} → {T_target}, audio {T_a} → {T_target}")
+    return vision_aligned, audio_aligned
+
+
+def align_by_adaptive_pooling(vision_features, audio_features):
+    """
+    Align by pooling both to an intermediate timeline (≈ geometric mean).
+    Example: T_v=25, T_a=100 → T_target≈50.
+    """
+    B_v, T_v, D_v = vision_features.shape
+    B_a, T_a, D_a = audio_features.shape
+    assert B_v == B_a, f"Batch sizes must match: {B_v} vs {B_a}"
+
     if T_v == T_a:
         return vision_features, audio_features
-    
-    if method == "pad_truncate":
-        # Use the shorter sequence length and pad/truncate accordingly
-        T_target = min(T_v, T_a)
-        
-        # Truncate if necessary
-        vision_aligned = vision_features[:, :T_target, :]
-        audio_aligned = audio_features[:, :T_target, :]
-        
-        logging.info(f"Temporal alignment: vision {T_v} -> {T_target}, audio {T_a} -> {T_target}")
-        
-    elif method == "interpolate":
-        # Interpolate to match the longer sequence
-        T_target = max(T_v, T_a)
-        
-        if T_v != T_target:
-            # Interpolate vision features
-            vision_features_transposed = vision_features.transpose(1, 2)  # B, D_v, T_v
-            vision_aligned = F.interpolate(
-                vision_features_transposed, 
-                size=T_target, 
-                mode='linear', 
-                align_corners=False
-            ).transpose(1, 2)  # B, T_target, D_v
-        else:
-            vision_aligned = vision_features
-            
-        if T_a != T_target:
-            # Interpolate audio features
-            audio_features_transposed = audio_features.transpose(1, 2)  # B, D_a, T_a
-            audio_aligned = F.interpolate(
-                audio_features_transposed, 
-                size=T_target, 
-                mode='linear', 
-                align_corners=False
-            ).transpose(1, 2)  # B, T_target, D_a
-        else:
-            audio_aligned = audio_features
-            
-        logging.info(f"Temporal alignment (interpolate): vision {T_v} -> {T_target}, audio {T_a} -> {T_target}")
-    else:
-        raise ValueError(f"Unknown alignment method: {method}")
-    
+
+    T_target = int(math.sqrt(T_v * T_a))
+    T_target = max(min(T_v, T_a) // 2, min(T_target, max(T_v, T_a)))
+    T_target = max(T_target, 50)  # safety
+
+    vision_aligned = F.adaptive_avg_pool1d(vision_features.transpose(1, 2), T_target).transpose(1, 2)
+    audio_aligned  = F.adaptive_avg_pool1d(audio_features.transpose(1, 2), T_target).transpose(1, 2)
+
+    logging.info(f"Adaptive pooling alignment: vision {T_v}, audio {T_a} → {T_target}")
     return vision_aligned, audio_aligned
+
+def align_temporal_sequences(vision_features, audio_features, method="interp"):
+    """
+    Wrapper for different temporal alignment methods.
+    
+    Args:
+        vision_features (torch.Tensor): (B, T_v, D_v)
+        audio_features (torch.Tensor): (B, T_a, D_a)
+        method (str): "stack" | "interp" | "adaptive"
+    """
+    if method == "stack":
+        return align_by_stacking(vision_features, audio_features)
+    elif method == "interp":
+        return align_by_interpolation(vision_features, audio_features)
+    elif method == "adaptive":
+        return align_by_adaptive_pooling(vision_features, audio_features)
+    else:
+        raise ValueError(f"Unknown method: {method}")
 
 
 class MultimodalFusion(torch.nn.Module):
@@ -367,6 +398,7 @@ class E2E(torch.nn.Module):
                  vision_encoder=None, audio_encoder=None, decoder="transformer", 
                  use_qlora=False, qlora_r=16, qlora_alpha=32,
                  vision_model_name=None, audio_model_name=None, decoder_model_name=None,
+                 fusion_type="concat",
                  **kwargs):
         super().__init__()
 
@@ -383,6 +415,7 @@ class E2E(torch.nn.Module):
         self.vision_model_name = vision_model_name
         self.audio_model_name = audio_model_name
         self.decoder_model_name = decoder_model_name
+        self.fusion_type = fusion_type
 
         # Validate model combinations
         try:
@@ -492,7 +525,7 @@ class E2E(torch.nn.Module):
                         vision_dim=vision_dim,
                         audio_dim=audio_dim,
                         output_dim=768,
-                        fusion_type="concat"  # Simple concatenation for now
+                        fusion_type=self.fusion_type
                     )
                 except Exception as e:
                     logging.error(f"Failed to create multimodal fusion: {e}")
@@ -535,6 +568,12 @@ class E2E(torch.nn.Module):
             encoder_specific_params = ['unfreeze_vision', 'unfreeze_audio', 'frozen']
             for param in encoder_specific_params:
                 decoder_kwargs.pop(param, None)
+            
+            # Pass QLoRA settings to decoder
+            if decoder == "llm":
+                decoder_kwargs['use_lora'] = self.use_qlora
+                decoder_kwargs['lora_r'] = self.qlora_r
+                decoder_kwargs['lora_alpha'] = self.qlora_alpha
             
             # For multimodal, pass the fusion output dimension as encoder_dim
             if self.modality == "multimodal":
@@ -609,7 +648,7 @@ class E2E(torch.nn.Module):
         # Valid encoder types
         valid_vision_encoders = ["resnet", "vit", "vivit", "clip-vit"]
         valid_audio_encoders = ["resnet1d", "whisper", "wavlm", "conformer"]
-        valid_decoders = ["transformer", "llama", "whisper-decoder"]
+        valid_decoders = ["transformer", "llm", "whisper-decoder"]
         valid_modalities = ["audio", "video", "multimodal"]
         
         # Validate modality
@@ -649,7 +688,7 @@ class E2E(torch.nn.Module):
                            "Example: --modality video or --vision-encoder resnet")
         
         # Check for potentially problematic combinations
-        if decoder in ["llama", "whisper-decoder"] and not self.use_qlora:
+        if decoder in ["llm", "whisper-decoder"] and not self.use_qlora:
             logging.warning(f"Using large decoder '{decoder}' without QLoRA may require significant GPU memory. "
                           f"Consider using --use-qlora flag to reduce memory usage.")
         
@@ -671,7 +710,7 @@ class E2E(torch.nn.Module):
             logging.warning(f"Audio encoder '{audio_encoder}' works best with a specific model name. "
                           f"Consider specifying --audio-model-name for better results.")
         
-        if decoder in ["llama", "whisper-decoder"] and not hasattr(self, 'decoder_model_name'):
+        if decoder in ["llm", "whisper-decoder"] and not hasattr(self, 'decoder_model_name'):
             logging.warning(f"Decoder '{decoder}' requires a specific model name. "
                           f"Consider specifying --decoder-model-name.")
 
@@ -709,19 +748,23 @@ class E2E(torch.nn.Module):
         
         try:
             # Apply QLoRA to decoder (most memory-intensive component)
+            # Skip for LLM decoder as it handles QLoRA internally
             if hasattr(self, 'decoder') and self.decoder is not None:
-                try:
-                    logging.info("Applying QLoRA to decoder")
-                    self.decoder = apply_qlora(
-                        self.decoder,
-                        target_modules=None,  # Use default target modules
-                        r=self.qlora_r,
-                        alpha=self.qlora_alpha,
-                        dropout=0.1,
-                        use_4bit=True
-                    )
-                except Exception as e:
-                    logging.warning(f"Failed to apply QLoRA to decoder: {e}")
+                if self.decoder_type == "llm":
+                    logging.info("Skipping QLoRA application to LLM decoder (handled internally)")
+                else:
+                    try:
+                        logging.info("Applying QLoRA to decoder")
+                        self.decoder = apply_qlora(
+                            self.decoder,
+                            target_modules=None,  # Use default target modules
+                            r=self.qlora_r,
+                            alpha=self.qlora_alpha,
+                            dropout=0.1,
+                            use_4bit=True
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to apply QLoRA to decoder: {e}")
             
             # Apply QLoRA to vision frontend if it's a large model
             if hasattr(self, 'vision_frontend') and self.vision_frontend is not None:
@@ -943,9 +986,9 @@ class E2E(torch.nn.Module):
             audio_input = audio_x if audio_x is not None else x
             audio_features = self.audio_frontend(audio_input)
             
-            # Align temporal sequences if needed
+            # Align temporal sequences to optimal frame rate
             vision_features, audio_features = align_temporal_sequences(
-                vision_features, audio_features, method="pad_truncate"
+                vision_features, audio_features
             )
             
             # Apply multimodal fusion
@@ -953,15 +996,22 @@ class E2E(torch.nn.Module):
             
             # Update lengths based on the aligned sequence length
             aligned_length = x.size(1)
-            if aligned_length != lengths.max():
-                # Adjust lengths proportionally
-                length_ratio = aligned_length / lengths.max().float()
-                lengths = (lengths.float() * length_ratio).long()
-                # Recreate padding mask with new lengths
-                padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
+            
+            # Calculate the scaling factor based on the maximum original length
+            original_max_length = lengths.max().item()
+            if original_max_length > 0:
+                length_scale = aligned_length / original_max_length
+                # Scale all lengths proportionally and ensure they don't exceed aligned_length
+                lengths = torch.clamp((lengths.float() * length_scale).long(), max=aligned_length)
+            else:
+                # Fallback: set all lengths to aligned_length
+                lengths = torch.full_like(lengths, aligned_length)
+            
+            # Recreate padding mask with properly scaled lengths
+            padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
                 
         else:
-            # Single modality processing - simplified approach
+            # Single modality processing
             x = self.frontend(x)
             x = self.proj_encoder(x)
             
@@ -969,7 +1019,19 @@ class E2E(torch.nn.Module):
             actual_length = x.size(1)
             lengths = torch.full_like(lengths, actual_length)
             padding_mask = make_non_pad_mask(lengths).to(x.device).unsqueeze(-2)
+            
+            # Log memory warning for long sequences
+            if actual_length > 500 and x.size(0) > 1:
+                logging.warning(f"Audio-only mode with long sequences ({actual_length} frames, batch size {x.size(0)}) "
+                              f"may cause memory issues. Consider reducing batch size or using gradient checkpointing.")
 
+        # Use gradient checkpointing for memory efficiency with long sequences
+        # if self.training and x.size(1) > 100:  # Only for long sequences during training
+        #     x, _ = torch.utils.checkpoint.checkpoint(self.encoder, x, padding_mask, use_reentrant=False)
+        # else:
+        #     x, _ = self.encoder(x, padding_mask)
+
+        # encoder pass
         x, _ = self.encoder(x, padding_mask)
 
         # ctc loss

@@ -55,7 +55,7 @@ def test_e2e_model():
         modality=None,
         vision_encoder="vit",
         audio_encoder="whisper",
-        decoder="llama",  # Use transformer instead of llama for simpler debugging
+        decoder="llm",  # Use transformer instead of llm for simpler debugging
         use_qlora=False,  # Disable QLoRA for debugging
         vision_model_name="google/vit-base-patch16-224",
         audio_model_name="openai/whisper-tiny",

@@ -130,33 +130,32 @@ class WhisperDecoder(BatchScorerInterface, torch.nn.Module):
         encoder_attention_mask = None
         if memory_mask is not None:
             # memory_mask is typically 1 for valid positions, 0 for padding
-            # Convert to the format expected by Whisper (invert if needed)
-            encoder_attention_mask = memory_mask.float()
+            # Convert to boolean or keep as integer (not float)
+            encoder_attention_mask = memory_mask.bool()
         
         # Create decoder attention mask (causal mask)
         decoder_attention_mask = None
         if tgt_mask is not None:
-            decoder_attention_mask = tgt_mask.float()
+            # Check if tgt_mask has the right dimensions
+            if tgt_mask.dim() > 2:
+                # If it's a 3D causal mask, convert to 2D attention mask
+                # For Whisper, we just need a simple 2D mask indicating valid positions
+                decoder_attention_mask = torch.ones(tgt.shape, dtype=torch.bool, device=tgt.device)
+            else:
+                decoder_attention_mask = tgt_mask.bool()
         
         # Forward through Whisper decoder
-        try:
-            decoder_outputs = self.whisper_decoder(
-                input_ids=tgt,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                use_cache=False,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-            )
-            
-            hidden_states = decoder_outputs.last_hidden_state  # (batch, maxlen_out, hidden_size)
-            
-        except Exception as e:
-            logging.error(f"Error in Whisper decoder forward pass: {e}")
-            # Fallback: use a simple approach
-            hidden_states = self._simple_forward(tgt, encoder_hidden_states, encoder_attention_mask)
+        decoder_outputs = self.whisper_decoder(
+            input_ids=tgt,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_states,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        
+        hidden_states = decoder_outputs.last_hidden_state  # (batch, maxlen_out, hidden_size)
         
         # Apply output projection if needed
         if self.output_layer is not None:
@@ -167,33 +166,7 @@ class WhisperDecoder(BatchScorerInterface, torch.nn.Module):
         
         return output, tgt_mask
     
-    def _simple_forward(self, tgt, encoder_hidden_states, encoder_attention_mask):
-        """Simple fallback forward pass."""
-        # Get embeddings
-        inputs_embeds = self.whisper_decoder.embed_tokens(tgt)
-        
-        # Add positional embeddings
-        if hasattr(self.whisper_decoder, 'embed_positions'):
-            positions = self.whisper_decoder.embed_positions(tgt)
-            inputs_embeds = inputs_embeds + positions
-        
-        # Apply dropout
-        hidden_states = self.whisper_decoder.dropout(inputs_embeds)
-        
-        # Process through decoder layers
-        for layer in self.whisper_decoder.layers:
-            layer_outputs = layer(
-                hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-            )
-            hidden_states = layer_outputs[0]
-        
-        # Apply final layer norm
-        if hasattr(self.whisper_decoder, 'layer_norm'):
-            hidden_states = self.whisper_decoder.layer_norm(hidden_states)
-        
-        return hidden_states
+
     
     def forward_one_step(self, tgt, tgt_mask, memory, memory_mask=None, cache=None):
         """Forward one step for beam search.
@@ -213,33 +186,23 @@ class WhisperDecoder(BatchScorerInterface, torch.nn.Module):
         encoder_hidden_states = self.encoder_projection(memory)
         encoder_hidden_states = self.encoder_layer_norm(encoder_hidden_states)
         
-        # Convert masks
-        encoder_attention_mask = memory_mask.float() if memory_mask is not None else None
-        decoder_attention_mask = tgt_mask.float() if tgt_mask is not None else None
+        # Convert masks (use bool, not float)
+        decoder_attention_mask = tgt_mask.bool() if tgt_mask is not None else None
         
-        # For beam search, we typically want to use caching for efficiency
-        # For now, we'll use a simplified approach
-        try:
-            decoder_outputs = self.whisper_decoder(
-                input_ids=tgt,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                use_cache=True,
-                past_key_values=cache,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-            )
-            
-            hidden_states = decoder_outputs.last_hidden_state
-            new_cache = decoder_outputs.past_key_values
-            
-        except Exception as e:
-            logging.warning(f"Error in cached forward pass: {e}. Using full forward.")
-            output, _ = self.forward(tgt, tgt_mask, memory, memory_mask)
-            hidden_states = output
-            new_cache = cache
+        # Forward through Whisper decoder with caching
+        decoder_outputs = self.whisper_decoder(
+            input_ids=tgt,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_states,
+            use_cache=True,
+            past_key_values=cache,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        
+        hidden_states = decoder_outputs.last_hidden_state
+        new_cache = decoder_outputs.past_key_values
         
         # Get the last token's output
         last_hidden = hidden_states[:, -1, :]  # (batch, hidden_size)

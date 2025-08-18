@@ -15,7 +15,7 @@ from espnet.nets.scorer_interface import BatchScorerInterface
 from espnet.nets.pytorch_backend.transformer.mask import subsequent_mask
 
 try:
-    from transformers import LlamaModel, LlamaConfig
+    from transformers import LlamaModel, LlamaForCausalLM, LlamaConfig
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
@@ -72,14 +72,14 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
         self.use_lora = use_lora
         self.encoder_dim = encoder_dim
         
-        # Load LLaMA configuration and model
+        # Store model name
+        self.model_name = model_name
+        
+        # Load LLaMA configuration first
         try:
             from espnet.nets.pytorch_backend.model_cache_utils import (
                 load_model_from_path_or_download, get_model_path, check_model_exists_locally, log_model_info
             )
-            
-            # Load model from local path or download
-            self.llama = load_model_from_path_or_download(LlamaModel, model_name)
             
             # Load config from the same location
             model_path = get_model_path(model_name)
@@ -89,6 +89,14 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
                 config = LlamaConfig.from_pretrained(model_name)
             
             self.hidden_size = config.hidden_size
+            
+            # Load model with or without quantization based on use_lora flag
+            if use_lora:
+                self._load_model_with_qlora(model_name, lora_r, lora_alpha, lora_dropout)
+            else:
+                # Load model normally
+                self.llama = load_model_from_path_or_download(LlamaModel, model_name)
+            
             log_model_info(model_name, "LLaMA")
         except Exception as e:
             logging.error(f"Failed to load LLaMA model {model_name}: {e}")
@@ -99,45 +107,93 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
             for param in self.llama.parameters():
                 param.requires_grad = False
         
-        # Add cross-attention layers for encoder-decoder attention
-        self.cross_attention_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=self.hidden_size,
-                num_heads=config.num_attention_heads,
-                dropout=0.1,
-                batch_first=True
-            )
-            for _ in range(config.num_hidden_layers)
-        ])
-        
         # Projection layer to align encoder features with LLaMA hidden size
         self.encoder_projection = nn.Linear(encoder_dim, self.hidden_size)
         
         # Output projection layer
         self.output_layer = nn.Linear(self.hidden_size, odim)
         
-        # Apply LoRA if requested
-        if use_lora:
-            if not PEFT_AVAILABLE:
-                logging.warning(
-                    "peft not available. Falling back to standard training."
-                )
-            else:
-                self._apply_lora(lora_r, lora_alpha, lora_dropout)
+        # Log the configuration
+        logging.info(f"LLaMA decoder initialized for simple language modeling")
     
-    def _apply_lora(self, r: int, alpha: int, dropout: float):
-        """Apply LoRA to the LLaMA model."""
-        lora_config = LoraConfig(
-            r=r,
-            lora_alpha=alpha,
-            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
-            lora_dropout=dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
+    def _load_model_with_qlora(self, model_name: str, r: int, alpha: int, dropout: float):
+        """Load model with QLoRA from the start - no double loading."""
+        if not PEFT_AVAILABLE:
+            logging.warning("peft not available. Loading model without LoRA.")
+            from espnet.nets.pytorch_backend.model_cache_utils import load_model_from_path_or_download
+            self.llama = load_model_from_path_or_download(LlamaModel, model_name)
+            return
+        
+        from transformers import BitsAndBytesConfig
+        from espnet.nets.pytorch_backend.model_cache_utils import (
+            get_model_path, check_model_exists_locally
         )
         
-        self.llama = get_peft_model(self.llama, lora_config)
-        logging.info(f"Applied LoRA with r={r}, alpha={alpha}, dropout={dropout}")
+        try:
+            # Create quantization config
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                torch_dtype=torch.float16
+            )
+            
+            # Load model with quantization directly
+            model_path = get_model_path(model_name)
+            if check_model_exists_locally(model_name):
+                self.llama = LlamaModel.from_pretrained(
+                    model_path, 
+                    quantization_config=bnb_config,
+                    torch_dtype=torch.float16,
+                    local_files_only=True,
+                    device_map="auto"
+                )
+            else:
+                self.llama = LlamaModel.from_pretrained(
+                    model_name,
+                    quantization_config=bnb_config,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+            
+            # Apply LoRA
+            lora_config = LoraConfig(
+                r=r,
+                lora_alpha=alpha,
+                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                lora_dropout=dropout,
+                bias="none",
+                task_type="FEATURE_EXTRACTION",
+            )
+            
+            self.llama = get_peft_model(self.llama, lora_config)
+            logging.info(f"Applied QLoRA with r={r}, alpha={alpha}, dropout={dropout}")
+            
+        except Exception as e:
+            logging.error(f"Failed to load model with QLoRA: {e}")
+            logging.info("Falling back to regular model loading")
+            
+            # Fallback to regular loading
+            from espnet.nets.pytorch_backend.model_cache_utils import load_model_from_path_or_download
+            self.llama = load_model_from_path_or_download(LlamaModel, model_name)
+            
+            # Try regular LoRA
+            try:
+                lora_config = LoraConfig(
+                    r=r,
+                    lora_alpha=alpha,
+                    target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                    lora_dropout=dropout,
+                    bias="none",
+                    task_type="FEATURE_EXTRACTION",
+                )
+                
+                self.llama = get_peft_model(self.llama, lora_config)
+                logging.info(f"Applied regular LoRA with r={r}, alpha={alpha}, dropout={dropout}")
+            except Exception as lora_e:
+                logging.error(f"Failed to apply LoRA: {lora_e}")
+                logging.info("Using model without LoRA")
     
     def forward(self, tgt, tgt_mask, memory, memory_mask):
         """Forward decoder.
@@ -145,7 +201,7 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
         Args:
             tgt (torch.Tensor): input token ids, int64 (batch, maxlen_out)
             tgt_mask (torch.Tensor): input token mask, (batch, maxlen_out)
-            memory (torch.Tensor): encoded memory, float32 (batch, maxlen_in, feat)
+            memory (torch.Tensor): encoded memory, float32 (batch, maxlen_in, feat) - already projected to LLaMA dims
             memory_mask (torch.Tensor): encoded memory mask, (batch, maxlen_in)
         
         Returns:
@@ -154,45 +210,48 @@ class LLaMADecoder(BatchScorerInterface, torch.nn.Module):
         """
         batch_size, seq_len = tgt.shape
         
-        # Project encoder features to LLaMA hidden size
-        memory_proj = self.encoder_projection(memory)  # (batch, maxlen_in, hidden_size)
-        
-        # Get LLaMA embeddings
+        # Get LLaMA embeddings for target tokens
         inputs_embeds = self.llama.embed_tokens(tgt)  # (batch, maxlen_out, hidden_size)
         
-        # Create attention mask for causal attention
-        causal_mask = subsequent_mask(seq_len, device=tgt.device)
-        causal_mask = causal_mask.unsqueeze(0).expand(batch_size, -1, -1)
-        
-        # Process through LLaMA layers with cross-attention
-        hidden_states = inputs_embeds
-        
-        for i, (layer, cross_attn) in enumerate(zip(self.llama.layers, self.cross_attention_layers)):
-            # Self-attention through LLaMA layer
-            layer_outputs = layer(
-                hidden_states,
-                attention_mask=causal_mask,
-                position_ids=None,
-                past_key_value=None,
-                output_attentions=False,
-                use_cache=False,
-            )
-            hidden_states = layer_outputs[0]
+        # Simple approach: Prepend encoder features to the input sequence
+        # This allows LLaMA to attend to encoder information naturally
+        if memory is not None:
+            # Project encoder features to LLaMA dimensions
+            memory_proj = self.encoder_projection(memory)  # (batch, maxlen_in, hidden_size)
+            # Concatenate encoder features with target embeddings
+            inputs_embeds = torch.cat([memory_proj, inputs_embeds], dim=1)  # (batch, maxlen_in + maxlen_out, hidden_size)
             
-            # Cross-attention with encoder memory
-            cross_attn_output, _ = cross_attn(
-                query=hidden_states,
-                key=memory_proj,
-                value=memory_proj,
-                key_padding_mask=memory_mask if memory_mask is not None else None,
-                need_weights=False,
-            )
-            
-            # Residual connection
-            hidden_states = hidden_states + cross_attn_output
+            # Update sequence length
+            total_seq_len = inputs_embeds.size(1)
+        else:
+            total_seq_len = seq_len
         
-        # Apply final layer norm
-        hidden_states = self.llama.norm(hidden_states)
+        # Create causal attention mask
+        causal_mask = subsequent_mask(total_seq_len, device=tgt.device)
+        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1)
+        
+        # Create position IDs
+        position_ids = torch.arange(total_seq_len, device=tgt.device).unsqueeze(0).expand(batch_size, -1)
+        
+        # Forward through LLaMA
+        llama_outputs = self.llama(
+            input_ids=None,
+            attention_mask=causal_mask,
+            position_ids=position_ids,
+            past_key_values=None,
+            inputs_embeds=inputs_embeds,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        
+        hidden_states = llama_outputs.last_hidden_state
+        
+        # Extract only the target token representations (skip encoder part)
+        if memory is not None:
+            memory_len = memory.size(1)
+            hidden_states = hidden_states[:, memory_len:, :]  # (batch, maxlen_out, hidden_size)
         
         # Project to output vocabulary
         output = self.output_layer(hidden_states)

@@ -100,7 +100,7 @@ def parse_args():
         type=str,
         default="transformer",
         help="Decoder type (Default: transformer)",
-        choices=["transformer", "llama", "whisper-decoder"],
+        choices=["transformer", "llm", "whisper-decoder"],
     )
     parser.add_argument(
         "--use-qlora",
@@ -144,6 +144,14 @@ def parse_args():
         action="store_true",
         help="Unfreeze audio encoder for full training (increases memory usage)",
     )
+    parser.add_argument(
+        "--fusion-type",
+        type=str,
+        default="concat",
+        help="Multimodal fusion type (Default: concat)",
+        choices=["concat", "add", "gated"],
+    )
+
     parser.add_argument(
         "--root-dir",
         type=str,
@@ -334,7 +342,7 @@ def validate_encoder_decoder_combinations(args):
         print(f"[WARNING] No --audio-model-name specified for {args.audio_encoder}. "
               f"Will use default model.")
     
-    if args.decoder in ["llama", "whisper-decoder"] and not args.decoder_model_name:
+    if args.decoder in ["llm", "whisper-decoder"] and not args.decoder_model_name:
         print(f"[WARNING] No --decoder-model-name specified for {args.decoder}. "
               f"Will use default model.")
     

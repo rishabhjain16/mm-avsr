@@ -41,6 +41,7 @@ class ModelModule(LightningModule):
             decoder_model_name=getattr(args, "decoder_model_name", None),
             unfreeze_vision=getattr(args, "unfreeze_vision", False),
             unfreeze_audio=getattr(args, "unfreeze_audio", False),
+            fusion_type=getattr(args, "fusion_type", "concat"),
         )
 
 
