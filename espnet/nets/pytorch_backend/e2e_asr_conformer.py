@@ -237,24 +237,78 @@ def get_encoder_output_dim(encoder, encoder_type, model_name=None):
             return 512  # Safe fallback
 
 
-def align_by_stacking(vision_features, audio_features):
-    """
-    Align by stacking audio frames to match video timeline.
-    Example: T_v=25, T_a=100 → stack ratio=4 → (B,25,4*D_a).
+def align_by_stacking(vision_features, audio_features, max_trunc_ratio=0.05):
+    B_v, T_v, D_v = vision_features.shape
+    B_a, T_a, D_a = audio_features.shape
+    assert B_v == B_a
+
+    # Step 1: truncate or pad audio frames
+    remainder = T_a % T_v
+    if remainder != 0:
+        trunc_ratio = remainder / T_a
+        if trunc_ratio <= max_trunc_ratio:
+            T_a_adj = T_a - remainder
+            audio_features = audio_features[:, :T_a_adj, :]
+        else:
+            pad_len = T_v - remainder
+            pad_tensor = torch.zeros(B_a, pad_len, D_a, device=audio_features.device, dtype=audio_features.dtype)
+            audio_features = torch.cat([audio_features, pad_tensor], dim=1)
+
+    # Step 2: reshape for stacking
+    r = audio_features.shape[1] // T_v
+    audio_reshaped = audio_features.view(B_a, T_v, r, D_a)  # (B, T_v, r, D_a)
+
+    # Step 3: merge stacked frames using mean (keeps D_a constant)
+    audio_aligned = audio_reshaped.mean(dim=2)  # (B, T_v, D_a)
+
+    return vision_features, audio_aligned
+
+def align_by_adaptive_pooling(vision_features, audio_features):
+    """Align temporal dimensions using adaptive pooling to optimal frame rate.
+    
+    This method finds the optimal target length that preserves the most information
+    from both modalities while ensuring efficient computation.
+    
+    Args:
+        vision_features (torch.Tensor): Vision features (B, T_v, D_v)
+        audio_features (torch.Tensor): Audio features (B, T_a, D_a)
+        
+    Returns:
+        tuple: Aligned (vision_features, audio_features) with same temporal dimension
     """
     B_v, T_v, D_v = vision_features.shape
     B_a, T_a, D_a = audio_features.shape
+    
     assert B_v == B_a, f"Batch sizes must match: {B_v} vs {B_a}"
     
-    if T_a % T_v != 0:
-        raise ValueError(f"Audio length {T_a} not divisible by video length {T_v} for stacking")
-
-    r = T_a // T_v
-    audio_stacked = audio_features.view(B_a, T_v, r * D_a)  # (B, T_v, r*D_a)
+    if T_v == T_a:
+        return vision_features, audio_features
     
-    logging.info(f"Stacking alignment: video {T_v}, audio {T_a} → (B,{T_v},{r*D_a})")
-    return vision_features, audio_stacked
-
+    # Use adaptive pooling to find optimal target length
+    # Target length is the geometric mean, which balances information preservation
+    # and computational efficiency
+    import math
+    T_target = int(math.sqrt(T_v * T_a))
+    
+    # Ensure target length is reasonable (not too small or too large)
+    T_target = max(min(T_v, T_a) // 2, min(T_target, max(T_v, T_a)))
+    T_target = max(T_target, 50)  # Minimum reasonable sequence length
+    
+    # Use adaptive average pooling for both modalities
+    # This preserves information better than simple interpolation
+    vision_aligned = torch.nn.functional.adaptive_avg_pool1d(
+        vision_features.transpose(1, 2),  # B, D_v, T_v
+        T_target
+    ).transpose(1, 2)  # B, T_target, D_v
+    
+    audio_aligned = torch.nn.functional.adaptive_avg_pool1d(
+        audio_features.transpose(1, 2),   # B, D_a, T_a  
+        T_target
+    ).transpose(1, 2)  # B, T_target, D_a
+    
+    logging.info(f"Temporal alignment: vision {T_v} + audio {T_a} -> {T_target} (optimal)")
+    
+    return vision_aligned, audio_aligned
 
 def align_by_interpolation(vision_features, audio_features):
     """
@@ -287,29 +341,7 @@ def align_by_interpolation(vision_features, audio_features):
     return vision_aligned, audio_aligned
 
 
-def align_by_adaptive_pooling(vision_features, audio_features):
-    """
-    Align by pooling both to an intermediate timeline (≈ geometric mean).
-    Example: T_v=25, T_a=100 → T_target≈50.
-    """
-    B_v, T_v, D_v = vision_features.shape
-    B_a, T_a, D_a = audio_features.shape
-    assert B_v == B_a, f"Batch sizes must match: {B_v} vs {B_a}"
-
-    if T_v == T_a:
-        return vision_features, audio_features
-
-    T_target = int(math.sqrt(T_v * T_a))
-    T_target = max(min(T_v, T_a) // 2, min(T_target, max(T_v, T_a)))
-    T_target = max(T_target, 50)  # safety
-
-    vision_aligned = F.adaptive_avg_pool1d(vision_features.transpose(1, 2), T_target).transpose(1, 2)
-    audio_aligned  = F.adaptive_avg_pool1d(audio_features.transpose(1, 2), T_target).transpose(1, 2)
-
-    logging.info(f"Adaptive pooling alignment: vision {T_v}, audio {T_a} → {T_target}")
-    return vision_aligned, audio_aligned
-
-def align_temporal_sequences(vision_features, audio_features, method="interp"):
+def align_temporal_sequences(vision_features, audio_features, method="stack"):
     """
     Wrapper for different temporal alignment methods.
     
