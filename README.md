@@ -23,7 +23,7 @@ By using this repository, you can achieve a word error rate (WER) of 20.3% for v
 1. Install PyTorch (pytorch, torchvision, torchaudio) and necessary packages:
 
 ```Shell
-pip install torch torchvision torchaudio pytorch-lightning sentencepiece av
+pip install torch torchvision torchaudio pytorch-lightning sentencepiece av transformers bitsandbytes wandb sound
 ```
 
 2. Prepare the dataset. Please refer to [preparation](./preparation).
