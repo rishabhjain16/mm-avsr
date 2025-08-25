@@ -12,15 +12,13 @@ def get_model_path(model_name):
     """Get the local path for a model.
     
     Args:
-        model_name (str): HuggingFace model name (e.g., "meta-llama/Llama-2-7b-hf")
+        model_name (str): HuggingFace model name (e.g., "meta-llama/Llama-3.2-1B")
         
     Returns:
         str: Path to the model directory
     """
-    # Simple clean naming: replace / with --
-    # e.g., "meta-llama/Llama-2-7b-hf" -> "meta-llama--Llama-2-7b-hf"
-    model_dir_name = model_name.replace("/", "--")
-    model_path = os.path.join(os.getcwd(), "downloaded_models", model_dir_name)
+    # Use natural directory structure: meta-llama/Llama-3.2-1B
+    model_path = os.path.join(os.getcwd(), "downloaded_models", model_name)
     return model_path
 
 

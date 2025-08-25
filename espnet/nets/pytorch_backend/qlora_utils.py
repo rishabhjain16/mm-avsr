@@ -55,8 +55,11 @@ def apply_qlora(
     actual_target_modules = _find_target_modules(model, target_modules)
     
     if not actual_target_modules:
-        logger.warning("No target modules found for LoRA. Skipping QLoRA application.")
-        return model
+        raise ValueError(
+            f"No target modules found for LoRA in model. "
+            f"Searched for: {target_modules}. "
+            f"Available linear layers: {[name.split('.')[-1] for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)]}"
+        )
     
     # Apply 4-bit quantization if requested
     if use_4bit:
@@ -117,48 +120,11 @@ def _find_target_modules(model: nn.Module, target_modules: Optional[List[str]] =
 
 
 def _apply_4bit_quantization(model: nn.Module) -> nn.Module:
-    """Apply 4-bit quantization to linear layers in the model.
-    
-    Args:
-        model (nn.Module): Model to quantize
-        
-    Returns:
-        nn.Module: Quantized model
-    """
-    try:
-        import bitsandbytes as bnb
-    except ImportError:
-        raise ImportError("4-bit quantization requires 'bitsandbytes' package")
-    
-    # Replace linear layers with 4-bit quantized versions
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            # Create 4-bit linear layer
-            quantized_layer = bnb.nn.Linear4bit(
-                module.in_features,
-                module.out_features,
-                bias=module.bias is not None,
-                compute_dtype=torch.float16,
-                compress_statistics=True,
-                quant_type="nf4"
-            )
-            
-            # Copy weights and bias
-            with torch.no_grad():
-                quantized_layer.weight.data = module.weight.data
-                if module.bias is not None:
-                    quantized_layer.bias.data = module.bias.data
-            
-            # Replace the module
-            parent_name = ".".join(name.split(".")[:-1])
-            child_name = name.split(".")[-1]
-            if parent_name:
-                parent_module = model.get_submodule(parent_name)
-                setattr(parent_module, child_name, quantized_layer)
-            else:
-                setattr(model, child_name, quantized_layer)
-    
-    return model
+    """Apply 4-bit quantization - deprecated, use BitsAndBytesConfig instead."""
+    raise NotImplementedError(
+        "Manual 4-bit quantization is deprecated. "
+        "Use BitsAndBytesConfig during model loading instead."
+    )
 
 
 def get_trainable_params(model: nn.Module) -> Iterator[nn.Parameter]:

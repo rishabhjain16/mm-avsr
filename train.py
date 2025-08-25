@@ -151,6 +151,11 @@ def parse_args():
         help="Multimodal fusion type (Default: concat)",
         choices=["concat", "add", "gated"],
     )
+    parser.add_argument(
+        "--use-instructions",
+        action="store_true",
+        help="Enable instruction tuning for LLM decoders",
+    )
 
     parser.add_argument(
         "--root-dir",
@@ -312,6 +317,13 @@ def validate_and_process_args(args):
     # Set the final modality
     args.modality = detected_modality
     
+    # Handle instruction tuning for LLM decoders
+    if args.decoder == "llm" and args.use_instructions:
+        print("[INFO] Instruction tuning enabled for LLM decoder")
+    elif args.use_instructions and args.decoder != "llm":
+        print("[WARNING] --use-instructions specified but --decoder is not 'llm'. Ignoring instructions.")
+        args.use_instructions = False
+    
     # Validate encoder-decoder combinations
     validate_encoder_decoder_combinations(args)
     
@@ -389,6 +401,11 @@ def log_model_configuration(args):
         print(f"QLoRA: Enabled (r={args.qlora_r}, alpha={args.qlora_alpha})")
     else:
         print("QLoRA: Disabled")
+    
+    if hasattr(args, 'use_instructions') and args.use_instructions:
+        print("Instructions: Enabled")
+    else:
+        print("Instructions: Disabled")
     
     print("=" * 50)
 

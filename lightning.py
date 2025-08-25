@@ -42,6 +42,8 @@ class ModelModule(LightningModule):
             unfreeze_vision=getattr(args, "unfreeze_vision", False),
             unfreeze_audio=getattr(args, "unfreeze_audio", False),
             fusion_type=getattr(args, "fusion_type", "concat"),
+            # Instruction tuning parameters
+            use_instructions=getattr(args, "use_instructions", False),
         )
 
 
@@ -123,6 +125,39 @@ class ModelModule(LightningModule):
         self.total_edit_distance += compute_word_level_distance(actual, predicted)
         self.total_length += len(actual.split())
         return
+
+    def on_train_start(self):
+        """Display training configuration at the start of training."""
+        print("\n" + "=" * 60)
+        print("🚀 TRAINING STARTED")
+        print("=" * 60)
+        
+        # Display model configuration
+        print(f"📊 Model Configuration:")
+        print(f"   Vision Encoder: {getattr(self.args, 'vision_encoder', 'None')}")
+        print(f"   Audio Encoder: {getattr(self.args, 'audio_encoder', 'None')}")
+        print(f"   Decoder: {getattr(self.args, 'decoder', 'transformer')}")
+        
+        if getattr(self.args, 'decoder_model_name', None):
+            print(f"   Decoder Model: {self.args.decoder_model_name}")
+        
+        # Display instruction tuning info
+        use_instructions = getattr(self.args, 'use_instructions', False)
+        print(f"   Instruction Tuning: {'✅ Enabled' if use_instructions else '❌ Disabled'}")
+        
+        if use_instructions and hasattr(self.model.decoder, 'instruction_prompt'):
+            print(f"   📝 Instruction Prompt: '{self.model.decoder.instruction_prompt}'")
+            if hasattr(self.model.decoder, 'instruction_tokens'):
+                print(f"   🔢 Instruction Tokens: {len(self.model.decoder.instruction_tokens)}")
+        
+        # Display QLoRA info
+        use_qlora = getattr(self.args, 'use_qlora', False)
+        print(f"   QLoRA: {'✅ Enabled' if use_qlora else '❌ Disabled'}")
+        if use_qlora:
+            print(f"      - Rank (r): {getattr(self.args, 'qlora_r', 16)}")
+            print(f"      - Alpha: {getattr(self.args, 'qlora_alpha', 32)}")
+        
+        print("=" * 60)
 
     def on_train_epoch_end(self):
         """Log memory usage at the end of each epoch."""

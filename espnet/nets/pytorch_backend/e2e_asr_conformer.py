@@ -128,13 +128,13 @@ def create_decoder(decoder_type="transformer", odim=None, model_name=None, **kwa
             )
         elif decoder_type == "llm":
             try:
-                from espnet.nets.pytorch_backend.decoder.llama_decoder import LLaMADecoder
+                from espnet.nets.pytorch_backend.decoder.llama_decoder import LLMDecoder
                 if odim is None:
                     raise ValueError("odim (output dimension) is required for LLM decoder")
                 # Use default model if none specified
                 if model_name is None:
                     model_name = "meta-llama/Llama-2-7b-hf"
-                return LLaMADecoder(odim=odim, model_name=model_name, **kwargs)
+                return LLMDecoder(odim=odim, model_name=model_name, **kwargs)
             except ImportError as e:
                 raise ImportError(f"LLM decoder dependencies not available. "
                                 f"Please install required packages: transformers, peft, bitsandbytes. Error: {e}")
@@ -431,6 +431,7 @@ class E2E(torch.nn.Module):
                  use_qlora=False, qlora_r=16, qlora_alpha=32,
                  vision_model_name=None, audio_model_name=None, decoder_model_name=None,
                  fusion_type="concat",
+                 use_instructions=False,
                  **kwargs):
         super().__init__()
 
@@ -448,6 +449,7 @@ class E2E(torch.nn.Module):
         self.audio_model_name = audio_model_name
         self.decoder_model_name = decoder_model_name
         self.fusion_type = fusion_type
+        self.use_instructions = use_instructions
 
         # Validate model combinations
         try:
@@ -597,15 +599,16 @@ class E2E(torch.nn.Module):
         try:
             # Filter out encoder-specific parameters that shouldn't be passed to decoder
             decoder_kwargs = kwargs.copy()
-            encoder_specific_params = ['unfreeze_vision', 'unfreeze_audio', 'frozen']
+            encoder_specific_params = ['unfreeze_vision', 'unfreeze_audio', 'frozen', 'idim']
             for param in encoder_specific_params:
                 decoder_kwargs.pop(param, None)
             
-            # Pass QLoRA settings to decoder
+            # Pass QLoRA and instruction settings to decoder
             if decoder == "llm":
                 decoder_kwargs['use_lora'] = self.use_qlora
                 decoder_kwargs['lora_r'] = self.qlora_r
                 decoder_kwargs['lora_alpha'] = self.qlora_alpha
+                decoder_kwargs['use_instructions'] = self.use_instructions
             
             # For multimodal, pass the fusion output dimension as encoder_dim
             if self.modality == "multimodal":
@@ -615,6 +618,11 @@ class E2E(torch.nn.Module):
                 # For single modality, pass the frontend output dimension
                 decoder_kwargs['encoder_dim'] = 768  # Standard conformer dimension
                 self.decoder = create_decoder(decoder, odim=odim, model_name=decoder_model_name, **decoder_kwargs)
+            
+            # Set instruction prompt based on modality for LLM decoders
+            if decoder == "llm" and hasattr(self.decoder, 'set_instruction_prompt'):
+                self.decoder.set_instruction_prompt(self.modality)
+                
         except Exception as e:
             logging.error(f"Failed to create decoder: {e}")
             raise

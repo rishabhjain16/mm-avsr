@@ -113,6 +113,11 @@ def parse_args():
         help="Flag to use debug level for logging",
     )
     parser.add_argument(
+        "--prompt",
+        type=str,
+        help="Instruction prompt for LLM decoders (only used with --decoder llm)",
+    )
+    parser.add_argument(
         "--output-json",
         type=str,
         default="test_results.json",
@@ -167,6 +172,9 @@ def validate_and_process_args(args):
     # Set the final modality
     args.modality = detected_modality
     
+    # Handle instruction prompt for LLM decoders (same as train.py)
+    process_instruction_prompt(args)
+    
     # Validate encoder-decoder combinations
     validate_encoder_decoder_combinations(args)
     
@@ -174,6 +182,37 @@ def validate_and_process_args(args):
     log_model_configuration(args)
     
     return args
+
+def get_default_instruction_prompt(modality):
+    """Generate default instruction prompt based on modality."""
+    if modality == "video":
+        return "Read the lips and transcribe the speech:"
+    elif modality == "audio":
+        return "Transcribe the following audio:"
+    elif modality == "multimodal":
+        return "Transcribe the speech from the audio and visual information:"
+    else:
+        return "Transcribe the speech:"
+
+def process_instruction_prompt(args):
+    """Process instruction prompt for LLM decoders."""
+    if args.decoder == "llm":
+        if args.prompt:
+            # User provided custom prompt
+            args.use_instructions = True
+            args.instruction_prompt = args.prompt
+            print(f"[INFO] Using custom instruction prompt: '{args.prompt}'")
+        else:
+            # Generate default prompt based on modality
+            args.use_instructions = True
+            args.instruction_prompt = get_default_instruction_prompt(args.modality)
+            print(f"[INFO] Using default instruction prompt for {args.modality}: '{args.instruction_prompt}'")
+    else:
+        # Not using LLM decoder, disable instructions
+        args.use_instructions = False
+        args.instruction_prompt = None
+        if args.prompt:
+            print(f"[WARNING] --prompt specified but --decoder is not 'llm'. Ignoring instruction prompt.")
 
 
 def validate_encoder_decoder_combinations(args):

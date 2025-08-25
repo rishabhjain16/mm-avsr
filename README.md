@@ -1,4 +1,5 @@
 # MM-AVSR: Modular Multimodal Audio-Visual Speech Recognition
+This Repo is forked from Auto-AVSR repo and is under development for research usecase. 
 
 ## Project Overview
 
@@ -12,7 +13,8 @@ This repository extends the Auto-AVSR framework with a **modular architecture** 
 - ✅ Multiple decoders (Transformer, LLaMA, Whisper Decoder)
 - ✅ Multimodal fusion with temporal alignment
 - ✅ QLoRA support for memory-efficient training
-- ✅ Instruction tuning for LLM decoders
+- ✅ **Instruction tuning for LLM decoders**
+
 
 `2025-01-06`: Reduced package dependencies.
 
@@ -121,6 +123,15 @@ python train.py --exp-dir ./exp --exp-name vsr_vit_llama \
                 --use-qlora --qlora-r 16 --qlora-alpha 32 \
                 --root-dir /path/to/dataset --train-file train.csv \
                 --num-nodes 1 --gpus 1
+
+# ViT + LLaMA with instruction tuning
+python train.py --exp-dir ./exp --exp-name vsr_vit_llama_instructions \
+                --vision-encoder vit --decoder llm \
+                --vision-model-name google/vit-base-patch16-224 \
+                --decoder-model-name meta-llama/Llama-3.2-1B \
+                --use-instructions --use-qlora \
+                --root-dir /path/to/dataset --train-file train.csv \
+                --num-nodes 1 --gpus 1
 ```
 
 #### 2. Audio-Only Speech Recognition
@@ -163,6 +174,17 @@ python train.py --exp-dir ./exp --exp-name avsr_vit_whisper_llama \
                 --use-qlora --qlora-r 16 --qlora-alpha 32 \
                 --root-dir /path/to/dataset --train-file train.csv \
                 --num-nodes 1 --gpus 1
+
+# Multimodal with instruction tuning
+python train.py --exp-dir ./exp --exp-name avsr_with_instructions \
+                --vision-encoder vit --audio-encoder whisper \
+                --decoder llm --fusion-type gated \
+                --vision-model-name google/vit-base-patch16-224 \
+                --audio-model-name openai/whisper-base \
+                --decoder-model-name meta-llama/Llama-3.2-1B \
+                --use-instructions --use-qlora \
+                --root-dir /path/to/dataset --train-file train.csv \
+                --num-nodes 1 --gpus 1
 ```
 
 ### Advanced Configuration Options
@@ -186,6 +208,28 @@ python train.py --exp-dir ./exp --exp-name avsr_vit_whisper_llama \
 
 **Multimodal Fusion:**
 - `--fusion-type`: `concat`, `add`, `gated`
+
+**Instruction Tuning (LLM Decoders Only):**
+- `--use-instructions`: Enable automatic instruction tuning based on modality
+- Prompts are automatically set:
+  - **Audio**: "Transcribe audio features to text."
+  - **Video**: "Transcribe video features to text."
+  - **Multimodal**: "Transcribe audio and video features to text."
+
+**Simple Usage:**
+```bash
+# Video-only with instruction tuning
+python train.py --vision-encoder resnet --decoder llm \
+    --decoder-model-name meta-llama/Llama-3.2-1B \
+    --use-instructions --use-qlora \
+    --root-dir /path/to/data --train-file train.csv
+
+# Multimodal with instruction tuning
+python train.py --vision-encoder resnet --audio-encoder resnet1d \
+    --decoder llm --decoder-model-name meta-llama/Llama-3.2-1B \
+    --use-instructions --use-qlora \
+    --root-dir /path/to/data --train-file train.csv
+```
 
 </details>
 
@@ -260,6 +304,14 @@ python eval.py --vision-encoder vit --audio-encoder whisper --decoder llm \
                --decoder-model-name meta-llama/Llama-2-7b-hf \
                --fusion-type gated \
                --pretrained-model-path ./exp/avsr_vit_whisper_llama/model_avg_10.pth \
+               --root-dir /path/to/dataset --test-file test.csv
+
+# Evaluate model with instruction tuning
+python eval.py --vision-encoder vit --decoder llm \
+               --vision-model-name google/vit-base-patch16-224 \
+               --decoder-model-name meta-llama/Llama-3.2-1B \
+               --use-instructions \
+               --pretrained-model-path ./exp/vsr_vit_llama_instructions/model_avg_10.pth \
                --root-dir /path/to/dataset --test-file test.csv
 ```
 
@@ -359,8 +411,8 @@ python train.py \
     --vision-encoder vit --audio-encoder whisper --decoder llm \
     --vision-model-name google/vit-base-patch16-224 \
     --audio-model-name openai/whisper-base \
-    --decoder-model-name meta-llama/Llama-2-7b-hf \
-    --fusion-type gated --use-qlora \
+    --decoder-model-name meta-llama/Llama-3.2-1B \
+    --use-instructions --use-qlora \
     --root-dir /path/to/lrs3 --train-file train.csv \
     --num-nodes 1 --gpus 1 --max-epochs 30 --lr 5e-5
 ```
@@ -373,8 +425,8 @@ python eval.py \
     --vision-encoder vit --audio-encoder whisper --decoder llm \
     --vision-model-name google/vit-base-patch16-224 \
     --audio-model-name openai/whisper-base \
-    --decoder-model-name meta-llama/Llama-2-7b-hf \
-    --fusion-type gated \
+    --decoder-model-name meta-llama/Llama-3.2-1B \
+    --use-instructions \
     --pretrained-model-path ./exp/advanced_avsr/model_avg_10.pth \
     --root-dir /path/to/lrs3 --test-file test.csv
 ```
